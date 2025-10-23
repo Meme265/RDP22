@@ -1,18 +1,47 @@
-name: Multi RDP with VPN via Tailscale
+name: Multi RDP with Proxy
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-tailscale-vpn:
+  rdp-proxy:
     runs-on: windows-latest
     timeout-minutes: 360
     strategy:
       matrix:
-        session: [1,2,3,4,5,6,7,8,9,10]
+        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49]
 
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Read proxy and credentials
+      id: pick_proxy
+      shell: pwsh
+      run: |
+        $line = (Get-Content proxies.txt)[$env:proxy_index].Trim()
+        # line format: ip:port username:password
+        $split = $line -split "\s+"
+        $ipport = $split[0]
+        $userpass = $split[1]
+        Write-Host "IPPort: $ipport"
+        Write-Host "UserPass: $userpass"
+        echo "::set-output name=iproxy::$ipport"
+        echo "::set-output name=uproxy::$userpass"
+
+    - name: Set proxy environment variables
+      shell: pwsh
+      run: |
+        $ipport = "${{ steps.pick_proxy.outputs.iproxy }}"
+        $userpass = "${{ steps.pick_proxy.outputs.uproxy }}"
+        $proxyUri = "http://$userpass@$ipport"
+        Write-Host "Setting proxy to $proxyUri"
+        [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
+        [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
+
+    # Your existing RDP and Tailscale setup steps
     - name: Enable RDP and Firewall
+      shell: pwsh
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
         netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
@@ -34,86 +63,9 @@ jobs:
         Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
         Remove-Item $installerPath -Force
 
-    - name: Install OpenVPN with retries
-      shell: pwsh
-      run: |
-        $maxRetries = 3
-        $retryCount = 0
-        while ($retryCount -lt $maxRetries) {
-          try {
-            choco install openvpn -y
-            Write-Host "OpenVPN installed successfully."
-            break
-          } catch {
-            Write-Host "Attempt $($retryCount + 1) failed: $_"
-            Start-Sleep -Seconds 10
-            $retryCount++
-          }
-        }
-        if ($retryCount -eq $maxRetries) {
-          throw "Failed to install OpenVPN after multiple attempts."
-        }
-
-    - name: Create example VPN config files
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Path C:\vpn -Force
-        @'
-        client
-        dev tun
-        proto udp
-        remote japan.vpn.example 1194
-        resolv-retry infinite
-        nobind
-        persist-key
-        persist-tun
-        remote-cert-tls server
-        cipher AES-256-CBC
-        auth SHA256
-        verb 3
-        '@ | Set-Content -Path C:\vpn\japan.ovpn
-
-        @'
-        client
-        dev tun
-        proto udp
-        remote thailand.vpn.example 1194
-        resolv-retry infinite
-        nobind
-        persist-key
-        persist-tun
-        remote-cert-tls server
-        cipher AES-256-CBC
-        auth SHA256
-        verb 3
-        '@ | Set-Content -Path C:\vpn\thailand.ovpn
-
-        @'
-        client
-        dev tun
-        proto udp
-        remote southafrica.vpn.example 1194
-        resolv-retry infinite
-        nobind
-        persist-key
-        persist-tun
-        remote-cert-tls server
-        cipher AES-256-CBC
-        auth SHA256
-        verb 3
-        '@ | Set-Content -Path C:\vpn\southafrica.ovpn
-
-    - name: Connect to random VPN server
-      shell: pwsh
-      run: |
-        $vpnConfigs = @("C:\\vpn\\japan.ovpn", "C:\\vpn\\thailand.ovpn", "C:\\vpn\\southafrica.ovpn")
-        $choice = Get-Random -InputObject $vpnConfigs
-        Write-Host "Connecting to VPN config: $choice"
-        Start-Process -FilePath "C:\\Program Files\\OpenVPN\\bin\\openvpn.exe" -ArgumentList "--config `"$choice`"" -NoNewWindow
-
     - name: Connect to Tailscale
       run: |
-        $hostName = "gh-runner-${{ matrix.session }}"
+        $hostName = "gh-runner-${{ matrix.proxy_index }}"
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostName
         $tsIP = $null
         $tries = 0
@@ -130,11 +82,11 @@ jobs:
 
     - name: Show Tailscale IP and Credentials
       run: |
-        Write-Host "Session ${{ matrix.session }} Tailscale IP: $env:TAILSCALE_IP"
+        Write-Host "Session ${{ matrix.proxy_index }} Tailscale IP: $env:TAILSCALE_IP"
         Write-Host "RDP User: rdpsession"
         Write-Host "RDP Password: TestPass123!"
 
-    - name: Keep runner alive continuously
+    - name: Keep runner alive
       shell: pwsh
       run: |
         while ($true) {
