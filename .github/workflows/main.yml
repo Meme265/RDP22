@@ -11,7 +11,7 @@ jobs:
       matrix:
         proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,
                       20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
-                      40,41,42,43,44,45,46,47,48,49] # Adjust count as needed
+                      40,41,42,43,44,45,46,47,48,49]
 
     steps:
     - name: Checkout repository
@@ -28,25 +28,25 @@ jobs:
         Write-Host "Proxy index: $env:proxy_index"
         $idx = [int]$env:proxy_index
         if ($idx -ge $proxies.Count) {
-          Write-Host "Proxy index $idx exceeds available proxy lines."
+          Write-Host "Exceeded proxy count."
           exit 1
         }
         $line = $proxies[$idx].Trim()
         $split = $line -split "\s+"
         $ipport = $split[0]
         $userpass = $split[1]
-        Write-Host "Proxy IP and port: $ipport"
-        Write-Host "Proxy credentials: $userpass"
+        Write-Host "Proxy IP:Port: $ipport"
+        Write-Host "Credentials: $userpass"
         echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
         echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
-    - name: Set environment proxy
+    - name: Set proxy environment variables
       shell: pwsh
       run: |
         $ipport = "${{ steps.pick_proxy.outputs.iproxy }}"
         $userpass = "${{ steps.pick_proxy.outputs.uproxy }}"
         $proxyUri = "http://$userpass@$ipport"
-        Write-Host "Setting system proxy to: $proxyUri"
+        Write-Host "Setting proxy: $proxyUri"
         [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
         [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
 
@@ -63,7 +63,7 @@ jobs:
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
         New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
-        Write-Host "RDP user created with password: $password"
+        Write-Host "RDP User created."
 
     - name: Install Tailscale
       run: |
@@ -80,7 +80,7 @@ jobs:
         TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       run: |
         $hostName = "gh-runner-$env:proxy_index"
-        Write-Host "Connecting to Tailscale with hostname: $hostName"
+        Write-Host "Connecting Tailscale with hostname $hostName"
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName
         $tsIP = $null
         $tries = 0
@@ -90,18 +90,18 @@ jobs:
           $tries++
         }
         if (-not $tsIP) {
-          Write-Error "Tailscale IP not assigned, exiting."
+          Write-Error "No Tailscale IP assigned"
           exit 1
         }
-        Write-Host "Tailscale IP: $tsIP"
+        Write-Host "Tailscale IP assigned: $tsIP"
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-    - name: Display session info
+    - name: Display session details
       shell: pwsh
       run: |
         Write-Host "Session $env:proxy_index Tailscale IP: $env:TAILSCALE_IP"
-        Write-Host "RDP Username: rdpsession"
-        Write-Host "RDP Password: TestPass123!"
+        Write-Host "RDP User: rdpsession"
+        Write-Host "Password: TestPass123!"
 
     - name: Keep runner alive
       shell: pwsh
