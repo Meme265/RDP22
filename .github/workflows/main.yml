@@ -6,7 +6,7 @@ on:
 jobs:
   rdp-tailscale-vpn:
     runs-on: windows-latest
-    timeout-minutes: 360  # Allow long running
+    timeout-minutes: 360
     strategy:
       matrix:
         session: [1,2,3,4,5,6,7,8,9,10]
@@ -53,14 +53,55 @@ jobs:
         if ($retryCount -eq $maxRetries) {
           throw "Failed to install OpenVPN after multiple attempts."
         }
-    
-    - name: Download VPN Configs
+
+    - name: Create example VPN config files
       shell: pwsh
       run: |
-        # Replace URLs below with your own VPN config URLs
-        Invoke-WebRequest -Uri https://example.com/japan.ovpn -OutFile C:\vpn\japan.ovpn
-        Invoke-WebRequest -Uri https://example.com/thailand.ovpn -OutFile C:\vpn\thailand.ovpn
-        Invoke-WebRequest -Uri https://example.com/southafrica.ovpn -OutFile C:\vpn\southafrica.ovpn
+        New-Item -ItemType Directory -Path C:\vpn -Force
+        @'
+        client
+        dev tun
+        proto udp
+        remote japan.vpn.example 1194
+        resolv-retry infinite
+        nobind
+        persist-key
+        persist-tun
+        remote-cert-tls server
+        cipher AES-256-CBC
+        auth SHA256
+        verb 3
+        '@ | Set-Content -Path C:\vpn\japan.ovpn
+
+        @'
+        client
+        dev tun
+        proto udp
+        remote thailand.vpn.example 1194
+        resolv-retry infinite
+        nobind
+        persist-key
+        persist-tun
+        remote-cert-tls server
+        cipher AES-256-CBC
+        auth SHA256
+        verb 3
+        '@ | Set-Content -Path C:\vpn\thailand.ovpn
+
+        @'
+        client
+        dev tun
+        proto udp
+        remote southafrica.vpn.example 1194
+        resolv-retry infinite
+        nobind
+        persist-key
+        persist-tun
+        remote-cert-tls server
+        cipher AES-256-CBC
+        auth SHA256
+        verb 3
+        '@ | Set-Content -Path C:\vpn\southafrica.ovpn
 
     - name: Connect to random VPN server
       shell: pwsh
