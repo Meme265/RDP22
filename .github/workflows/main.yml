@@ -9,7 +9,9 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49]
+        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                      21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
+                      40,41,42,43,44,45,46,47,48,49] # Adjust this count to match your proxies
 
     steps:
     - name: Checkout repository
@@ -19,15 +21,26 @@ jobs:
       id: pick_proxy
       shell: pwsh
       run: |
-        $line = (Get-Content proxies.txt)[$env:proxy_index].Trim()
-        # line format: ip:port username:password
+        $proxies = Get-Content proxies.txt
+        Write-Host "Proxy lines: $($proxies.Count)"
+        Write-Host "Proxy index: $env:proxy_index"
+        if (-not $env:proxy_index) {
+          Write-Host "proxy_index is not set!"
+          exit 1
+        }
+        $idx = [int]$env:proxy_index
+        if ($idx -ge $proxies.Count) {
+          Write-Host "proxy_index $idx is out of range. Only $($proxies.Count) proxies available."
+          exit 1
+        }
+        $line = $proxies[$idx].Trim()
         $split = $line -split "\s+"
         $ipport = $split[0]
         $userpass = $split[1]
         Write-Host "IPPort: $ipport"
         Write-Host "UserPass: $userpass"
-        echo "::set-output name=iproxy::$ipport"
-        echo "::set-output name=uproxy::$userpass"
+        echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
+        echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
     - name: Set proxy environment variables
       shell: pwsh
@@ -39,7 +52,6 @@ jobs:
         [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
         [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
 
-    # Your existing RDP and Tailscale setup steps
     - name: Enable RDP and Firewall
       shell: pwsh
       run: |
@@ -81,6 +93,7 @@ jobs:
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
     - name: Show Tailscale IP and Credentials
+      shell: pwsh
       run: |
         Write-Host "Session ${{ matrix.proxy_index }} Tailscale IP: $env:TAILSCALE_IP"
         Write-Host "RDP User: rdpsession"
