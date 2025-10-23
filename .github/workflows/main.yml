@@ -1,4 +1,4 @@
-name: Multi RDP with Proxy
+name: Multi RDP with Proxy and Tailscale
 
 on:
   workflow_dispatch:
@@ -9,9 +9,9 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
-                      21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
-                      40,41,42,43,44,45,46,47,48,49] # Adjust based on your proxies count
+        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,
+                      20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
+                      40,41,42,43,44,45,46,47,48,49]  # Adjust count to proxies.txt line count
 
     steps:
     - name: Checkout repository
@@ -24,23 +24,19 @@ jobs:
         proxy_index: ${{ matrix.proxy_index }}
       run: |
         $proxies = Get-Content proxies.txt
-        Write-Host "Proxy lines: $($proxies.Count)"
-        Write-Host "Proxy index: $env:proxy_index"
-        if (-not $env:proxy_index) {
-          Write-Host "proxy_index is not set!"
-          exit 1
-        }
+        Write-Host "Total proxies: $($proxies.Count)"
+        Write-Host "Current proxy index: $env:proxy_index"
         $idx = [int]$env:proxy_index
         if ($idx -ge $proxies.Count) {
-          Write-Host "proxy_index $idx is out of range. Only $($proxies.Count) proxies available."
+          Write-Error "Proxy index $idx exceeds proxy list count $($proxies.Count)."
           exit 1
         }
         $line = $proxies[$idx].Trim()
         $split = $line -split "\s+"
         $ipport = $split[0]
         $userpass = $split[1]
-        Write-Host "IPPort: $ipport"
-        Write-Host "UserPass: $userpass"
+        Write-Host "Proxy IP:Port: $ipport"
+        Write-Host "Credentials: $userpass"
         echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
         echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
@@ -50,14 +46,14 @@ jobs:
         $ipport = "${{ steps.pick_proxy.outputs.iproxy }}"
         $userpass = "${{ steps.pick_proxy.outputs.uproxy }}"
         $proxyUri = "http://$userpass@$ipport"
-        Write-Host "Setting proxy to $proxyUri"
+        Write-Host "Setting http_proxy and https_proxy to $proxyUri"
         [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
         [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
 
     - name: Enable RDP and Firewall
       shell: pwsh
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
         netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
     - name: Create RDP User
@@ -67,7 +63,7 @@ jobs:
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
         New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
-        echo "User: rdpsession; Password: $password"
+        Write-Host "Created user rdpsession with password $password"
 
     - name: Install Tailscale
       run: |
@@ -96,13 +92,14 @@ jobs:
           Write-Error 'Tailscale IP not assigned, exiting'
           exit 1
         }
+        Write-Host "Tailscale IP acquired: $tsIP"
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-    - name: Show Tailscale IP and Credentials
+    - name: Show session info
       shell: pwsh
       run: |
         Write-Host "Session $env:proxy_index Tailscale IP: $env:TAILSCALE_IP"
-        Write-Host "RDP User: rdpsession"
+        Write-Host "RDP Username: rdpsession"
         Write-Host "RDP Password: TestPass123!"
 
     - name: Keep runner alive
