@@ -9,43 +9,53 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        proxy_index: [0,1,2,3,4,5,6,7,8,9]  # 10 proxies total
+        proxy_index: [0,1,2,3,4,5,6,7,8,9]  # 10 parallel sessions using proxies.txt lines
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Read proxy line
-      id: read_proxy
+    - name: Safe read proxy from proxies.txt
+      id: get_proxy
       shell: pwsh
       env:
         proxy_index: ${{ matrix.proxy_index }}
       run: |
-        $proxies = Get-Content proxies.txt
-        $idx = [int]$env:proxy_index
-        if ($idx -ge $proxies.Count) {
-          Write-Error "proxy_index $idx out of range for proxies.txt count $($proxies.Count)"
+        try {
+          Write-Host "First 5 proxy lines:"
+          Get-Content proxies.txt -TotalCount 5 | ForEach-Object { Write-Host $_ }
+
+          $proxies = Get-Content proxies.txt
+          $idx = [int]$env:proxy_index
+          if ($idx -ge $proxies.Count) {
+            throw "proxy_index $idx out of range; total proxies: $($proxies.Count)"
+          }
+          $line = $proxies[$idx].Trim()
+          $split = $line -split "\s+"
+          if ($split.Length -lt 2) {
+            throw "Proxy line format invalid: $line"
+          }
+          $ipport = $split[0]
+          $userpass = $split[1]
+          echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
+          echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
+          Write-Host "Using proxy: $ipport with credentials $userpass"
+        } catch {
+          Write-Error $_.Exception.Message
           exit 1
         }
-        $line = $proxies[$idx].Trim()
-        $split = $line -split "\s+"
-        $ipport = $split[0]
-        $userpass = $split[1]
-        echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
-        echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
-        Write-Host "Using proxy: $ipport with userpass $userpass"
 
-    - name: Set system proxy environment variables
+    - name: Set system proxy
       shell: pwsh
       run: |
-        $ipport = "${{ steps.read_proxy.outputs.iproxy }}"
-        $userpass = "${{ steps.read_proxy.outputs.uproxy }}"
+        $ipport = "${{ steps.get_proxy.outputs.iproxy }}"
+        $userpass = "${{ steps.get_proxy.outputs.uproxy }}"
         $proxyUri = "http://$userpass@$ipport"
+        Write-Host "Setting http_proxy and https_proxy to $proxyUri"
         [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
         [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
-        Write-Host "System proxy set to $proxyUri"
 
-    - name: Enable RDP and firewall rules
+    - name: Enable RDP & firewall rule
       shell: pwsh
       run: |
         Set-ItemProperty -Path HKLM:\System\CurrentControlSet\Control\Terminal Server -Name fDenyTSConnections -Value 0 -Force
@@ -58,7 +68,7 @@ jobs:
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
         New-LocalUser -Name 'rdpsession' -Password $securePass -AccountNeverExpires
         Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'rdpsession'
-        Write-Host "Created user 'rdpsession' with password $password"
+        Write-Host "User rdpsession created with password $password"
 
     - name: Install Tailscale
       shell: pwsh
@@ -66,7 +76,7 @@ jobs:
         $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi'
         $file = "$env:TEMP\tailscale.msi"
         Invoke-WebRequest -Uri $url -OutFile $file
-        Start-Process -FilePath msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
+        Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
         Remove-Item $file
 
     - name: Connect to Tailscale
@@ -79,14 +89,14 @@ jobs:
         Write-Host "Connecting Tailscale as $hostName"
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName
         $tsIP = $null
-        $count = 0
-        while (-not $tsIP -and $count -lt 20) {
+        $tries = 0
+        while (-not $tsIP -and $tries -lt 20) {
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           Start-Sleep -Seconds 5
-          $count++
+          $tries++
         }
         if (-not $tsIP) {
-          Write-Error 'Failed to get Tailscale IP'
+          Write-Error "Tailscale IP not assigned"
           exit 1
         }
         Write-Host "Tailscale IP: $tsIP"
