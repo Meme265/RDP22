@@ -1,4 +1,4 @@
-name: Multi RDP with Proxy and Tailscale
+name: Multi RDP with Proxy and Tailscale (10 Sessions)
 
 on:
   workflow_dispatch:
@@ -9,69 +9,65 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,
-                      20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
-                      40,41,42,43,44,45,46,47,48,49]
+        proxy_index: [0,1,2,3,4,5,6,7,8,9]  # 10 proxies total
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Read proxy and credentials
-      id: pick_proxy
+    - name: Read proxy line
+      id: read_proxy
       shell: pwsh
       env:
         proxy_index: ${{ matrix.proxy_index }}
       run: |
         $proxies = Get-Content proxies.txt
-        Write-Host "Total proxies: $($proxies.Count)"
-        Write-Host "Proxy index: $env:proxy_index"
         $idx = [int]$env:proxy_index
         if ($idx -ge $proxies.Count) {
-          Write-Host "Exceeded proxy count."
+          Write-Error "proxy_index $idx out of range for proxies.txt count $($proxies.Count)"
           exit 1
         }
         $line = $proxies[$idx].Trim()
         $split = $line -split "\s+"
         $ipport = $split[0]
         $userpass = $split[1]
-        Write-Host "Proxy IP:Port: $ipport"
-        Write-Host "Credentials: $userpass"
         echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
         echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
+        Write-Host "Using proxy: $ipport with userpass $userpass"
 
-    - name: Set proxy environment variables
+    - name: Set system proxy environment variables
       shell: pwsh
       run: |
-        $ipport = "${{ steps.pick_proxy.outputs.iproxy }}"
-        $userpass = "${{ steps.pick_proxy.outputs.uproxy }}"
+        $ipport = "${{ steps.read_proxy.outputs.iproxy }}"
+        $userpass = "${{ steps.read_proxy.outputs.uproxy }}"
         $proxyUri = "http://$userpass@$ipport"
-        Write-Host "Setting proxy: $proxyUri"
         [Environment]::SetEnvironmentVariable('http_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
         [Environment]::SetEnvironmentVariable('https_proxy', $proxyUri, [EnvironmentVariableTarget]::Machine)
+        Write-Host "System proxy set to $proxyUri"
 
-    - name: Enable RDP and Firewall
+    - name: Enable RDP and firewall rules
       shell: pwsh
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path HKLM:\System\CurrentControlSet\Control\Terminal Server -Name fDenyTSConnections -Value 0 -Force
         netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
-    - name: Create RDP User
+    - name: Create RDP user
       shell: pwsh
       run: |
-        $password = "TestPass123!"
+        $password = 'TestPass123!'
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
-        Write-Host "RDP User created."
+        New-LocalUser -Name 'rdpsession' -Password $securePass -AccountNeverExpires
+        Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'rdpsession'
+        Write-Host "Created user 'rdpsession' with password $password"
 
     - name: Install Tailscale
+      shell: pwsh
       run: |
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-        $installerPath = "$env:TEMP\tailscale.msi"
-        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-        Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-        Remove-Item $installerPath
+        $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi'
+        $file = "$env:TEMP\tailscale.msi"
+        Invoke-WebRequest -Uri $url -OutFile $file
+        Start-Process -FilePath msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
+        Remove-Item $file
 
     - name: Connect to Tailscale
       shell: pwsh
@@ -80,28 +76,28 @@ jobs:
         TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       run: |
         $hostName = "gh-runner-$env:proxy_index"
-        Write-Host "Connecting Tailscale with hostname $hostName"
+        Write-Host "Connecting Tailscale as $hostName"
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName
         $tsIP = $null
-        $tries = 0
-        while (-not $tsIP -and $tries -lt 20) {
+        $count = 0
+        while (-not $tsIP -and $count -lt 20) {
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           Start-Sleep -Seconds 5
-          $tries++
+          $count++
         }
         if (-not $tsIP) {
-          Write-Error "No Tailscale IP assigned"
+          Write-Error 'Failed to get Tailscale IP'
           exit 1
         }
-        Write-Host "Tailscale IP assigned: $tsIP"
+        Write-Host "Tailscale IP: $tsIP"
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-    - name: Display session details
+    - name: Show session info
       shell: pwsh
       run: |
         Write-Host "Session $env:proxy_index Tailscale IP: $env:TAILSCALE_IP"
         Write-Host "RDP User: rdpsession"
-        Write-Host "Password: TestPass123!"
+        Write-Host "RDP Password: TestPass123!"
 
     - name: Keep runner alive
       shell: pwsh
