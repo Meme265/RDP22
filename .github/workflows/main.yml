@@ -11,7 +11,7 @@ jobs:
       matrix:
         proxy_index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
                       21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
-                      40,41,42,43,44,45,46,47,48,49] # Adjust this count to match your proxies
+                      40,41,42,43,44,45,46,47,48,49] # Adjust to match your proxies
 
     steps:
     - name: Checkout repository
@@ -20,6 +20,8 @@ jobs:
     - name: Read proxy and credentials
       id: pick_proxy
       shell: pwsh
+      env:
+        proxy_index: ${{ matrix.proxy_index }}
       run: |
         $proxies = Get-Content proxies.txt
         Write-Host "Proxy lines: $($proxies.Count)"
@@ -76,8 +78,9 @@ jobs:
         Remove-Item $installerPath -Force
 
     - name: Connect to Tailscale
+      shell: pwsh
       run: |
-        $hostName = "gh-runner-${{ matrix.proxy_index }}"
+        $hostName = "gh-runner-${{ env.proxy_index }}"
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostName
         $tsIP = $null
         $tries = 0
@@ -95,7 +98,7 @@ jobs:
     - name: Show Tailscale IP and Credentials
       shell: pwsh
       run: |
-        Write-Host "Session ${{ matrix.proxy_index }} Tailscale IP: $env:TAILSCALE_IP"
+        Write-Host "Session ${{ env.proxy_index }} Tailscale IP: $env:TAILSCALE_IP"
         Write-Host "RDP User: rdpsession"
         Write-Host "RDP Password: TestPass123!"
 
