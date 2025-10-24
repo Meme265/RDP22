@@ -21,30 +21,57 @@ jobs:
       env:
         proxy_index: ${{ matrix.proxy_index }}
       run: |
-        try {
-          $proxies = Get-Content proxies.txt
-          $idx = [int]$env:proxy_index
-          if ($idx -ge $proxies.Count) { throw "proxy_index out of range" }
-          $line = $proxies[$idx].Trim()
-          $split = $line -split ':'
-          if ($split.Length -ne 4) { throw "proxy line invalid format: $line" }
-          $ip = $split[0]
-          $port = $split[1]
-          $uname = $split[2]
-          $pass = $split[3]
-          $ipport = "$ip`:$port"
-          $userpass = "$uname`:$pass"
-          echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
-          echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
+        $proxies = Get-Content proxies.txt
+        $idx = [int]$env:proxy_index
+        if ($idx -ge $proxies.Count) { throw "proxy_index out of range" }
+        $line = $proxies[$idx].Trim()
+        $split = $line -split ':'
+        if ($split.Length -ne 4) { throw "proxy line invalid format: $line" }
+        $ip = $split[0]
+        $port = $split[1]
+        $uname = $split[2]
+        $pass = $split[3]
+        $ipport = "$ip`:$port"
+        $userpass = "$uname`:$pass"
+        echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
+        echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
-          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
-          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $ipport
-          cmdkey /add:$ip /user:$uname /pass:$pass
-          Write-Host "Configured system proxy $ipport with user $uname"
-        } catch {
-          Write-Error $_.Exception.Message
-          exit 1
+    - name: Apply proxy settings in RDP user context
+      shell: pwsh
+      env:
+        iproxy: ${{ steps.set_proxy.outputs.iproxy }}
+        uproxy: ${{ steps.set_proxy.outputs.uproxy }}
+      run: |
+        $ipport = $env:iproxy
+        $userpass = $env:uproxy -split ':'
+        $user = $userpass[0]
+        $pass = $userpass[1]
+        $proxyUri = "http://$ipport"
+        $bypassList = "<local>"
+
+        # Set user-level Internet proxy registry
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyUri
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $bypassList
+
+        # Add credentials for proxy auth
+        cmdkey /add:$($ipport.Split(':')[0]) /user:$user /pass:$pass
+
+        # Set WinHTTP proxy (no admin = fallback to user)
+        $adminCheck = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+        if ($adminCheck) {
+          netsh winhttp set proxy proxy-server="$proxyUri" bypass-list=$bypassList
+          Write-Host "WinHTTP proxy set."
+        } else {
+          Write-Host "Administrator rights required for WinHTTP proxy setting. Skipped."
         }
+
+        # Set environment variables (user-level to avoid admin issues)
+        [Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://$user`:$pass@$ipport", "User")
+        [Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://$user`:$pass@$ipport", "User")
+        [Environment]::SetEnvironmentVariable("ALL_PROXY", "socks5://$ipport", "User")
+
+        Write-Host "Proxy configured: $proxyUri with user $user"
 
     - name: Enable RDP and firewall rule
       shell: pwsh
@@ -57,17 +84,22 @@ jobs:
       run: |
         $password = "TestPass123!"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
-        Write-Host "RDP User created with password $password"
+        if (!(Get-LocalUser -Name "rdpsession" -ErrorAction SilentlyContinue)) {
+          New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
+        }
+        Write-Host "RDP User created or existed with password $password"
 
     - name: Install Tailscale with proxy auth
       shell: pwsh
+      env:
+        iproxy: ${{ steps.set_proxy.outputs.iproxy }}
+        uproxy: ${{ steps.set_proxy.outputs.uproxy }}
       run: |
-        $proxyParts = "${{ steps.set_proxy.outputs.uproxy }}" -split ':'
+        $proxyParts = $env:uproxy -split ':'
         $proxyUser = $proxyParts[0]
         $proxyPass = $proxyParts[1]
-        $proxyUri = "http://${{ steps.set_proxy.outputs.iproxy }}"
+        $proxyUri = "http://$($env:iproxy)"
         $creds = New-Object System.Management.Automation.PSCredential($proxyUser, (ConvertTo-SecureString $proxyPass -AsPlainText -Force))
 
         $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
