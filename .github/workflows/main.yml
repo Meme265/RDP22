@@ -9,13 +9,13 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        proxy_index: [0,1,2,3,4,5,6,7,8,9]
+        proxy_index: [0,1,2,3,4,5,6,7,8,9]   # Handles 10 sessions/10 proxies at a time
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Parse proxy line (ip:port:username:password)
+    - name: Parse and export proxy line (ip:port:username:password)
       id: set_proxy
       shell: pwsh
       env:
@@ -36,7 +36,7 @@ jobs:
         echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
         echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
-    - name: Apply proxy settings in RDP user context
+    - name: Set Windows proxy so setting is ON
       shell: pwsh
       env:
         iproxy: ${{ steps.set_proxy.outputs.iproxy }}
@@ -46,34 +46,23 @@ jobs:
         $userpass = $env:uproxy -split ':'
         $user = $userpass[0]
         $pass = $userpass[1]
-        $proxyUri = "http://$ipport"
+        $proxyUri = $ipport
         $bypassList = "<local>"
 
-        # Set user-level Internet proxy registry
+        # Set Windows Settings proxy (will appear as ON in UI)
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyUri
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $bypassList
 
-        # Add credentials for proxy auth
+        # Save proxy credentials for auth-challenge proxies
         cmdkey /add:$($ipport.Split(':')[0]) /user:$user /pass:$pass
 
-        # Set WinHTTP proxy (no admin = fallback to user)
-        $adminCheck = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
-        if ($adminCheck) {
-          netsh winhttp set proxy proxy-server="$proxyUri" bypass-list=$bypassList
-          Write-Host "WinHTTP proxy set."
-        } else {
-          Write-Host "Administrator rights required for WinHTTP proxy setting. Skipped."
-        }
+        # Restart explorer so that Settings UI (and most browsers) instantly pick it up
+        Stop-Process -Name explorer -Force
+        Start-Process explorer.exe
+        Write-Host "Proxy set in Windows Settings and explorer restarted for $proxyUri with user $user"
 
-        # Set environment variables (user-level to avoid admin issues)
-        [Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://$user`:$pass@$ipport", "User")
-        [Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://$user`:$pass@$ipport", "User")
-        [Environment]::SetEnvironmentVariable("ALL_PROXY", "socks5://$ipport", "User")
-
-        Write-Host "Proxy configured: $proxyUri with user $user"
-
-    - name: Enable RDP and firewall rule
+    - name: Enable RDP and firewall (if needed)
       shell: pwsh
       run: |
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
@@ -88,9 +77,9 @@ jobs:
           New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
         }
-        Write-Host "RDP User created or existed with password $password"
+        Write-Host "RDP User created or already existed with password $password"
 
-    - name: Install Tailscale with proxy auth
+    - name: Install Tailscale via proxy
       shell: pwsh
       env:
         iproxy: ${{ steps.set_proxy.outputs.iproxy }}
