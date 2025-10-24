@@ -12,53 +12,74 @@ jobs:
         proxy_index: [0,1,2,3,4,5,6,7,8,9]
 
     steps:
+      # ----------------------------------------------------------
+      # 1️⃣ Checkout repo so we can access proxies.txt
+      # ----------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      # ----------------------------------------------------------
+      # 2️⃣ Read the specific proxy line for this job index
+      # Format expected in proxies.txt:
+      #    ip:port:username:password
+      # One proxy per line
+      # ----------------------------------------------------------
       - name: Parse proxy line
         id: set_proxy
         shell: pwsh
         env:
           proxy_index: ${{ matrix.proxy_index }}
         run: |
-          $proxies = Get-Content proxies.txt
+          $path = "proxies.txt"
+          if (!(Test-Path $path)) { throw "Missing proxies.txt in repo root." }
+
+          $proxies = Get-Content $path | Where-Object { $_.Trim() -ne "" }
           $idx = [int]$env:proxy_index
-          if ($idx -ge $proxies.Count) { throw "proxy_index out of range" }
+          if ($idx -ge $proxies.Count) { throw "proxy_index $idx out of range (only $($proxies.Count) lines)" }
+
           $line = $proxies[$idx].Trim()
+          Write-Host "Selected proxy line: $line"
+
           $split = $line -split ':'
-          if ($split.Length -ne 4) { throw "proxy line invalid format: $line" }
+          if ($split.Length -ne 4) { throw "Invalid proxy format. Expected ip:port:user:pass" }
+
           $ip = $split[0]
           $port = $split[1]
           $uname = $split[2]
           $pass = $split[3]
+
           $ipport = "$ip`:$port"
           $userpass = "$uname`:$pass"
-          echo "iproxy=$ipport" >> $env:GITHUB_OUTPUT
-          echo "uproxy=$userpass" >> $env:GITHUB_OUTPUT
 
-      - name: Set Proxy in Windows Settings and Enable It
+          echo "IPPORT=$ipport" >> $env:GITHUB_ENV
+          echo "USERPASS=$userpass" >> $env:GITHUB_ENV
+
+      # ----------------------------------------------------------
+      # 3️⃣ Set Windows proxy globally (system-wide)
+      # ----------------------------------------------------------
+      - name: Set Proxy in Windows Settings
         shell: pwsh
-        env:
-          iproxy: ${{ steps.set_proxy.outputs.iproxy }}
-          uproxy: ${{ steps.set_proxy.outputs.uproxy }}
         run: |
-          $ipport = $env:iproxy
-          $userpass = $env:uproxy -split ':'
-          $user = $userpass[0]
-          $pass = $userpass[1]
-          $proxyUri = $ipport
-          $bypassList = "<local>"
+          $ipport = $env:IPPORT
+          $creds = $env:USERPASS -split ':'
+          $user = $creds[0]
+          $pass = $creds[1]
 
+          Write-Host "Configuring system proxy $ipport for user $user"
+
+          # Enable Proxy
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
-          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyUri
-          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $bypassList
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $ipport
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value "<local>"
 
+          # Save credentials
           cmdkey /add:$($ipport.Split(':')[0]) /user:$user /pass:$pass
 
+          # Force refresh of proxy settings
           Add-Type -TypeDefinition @"
             using System;
             using System.Runtime.InteropServices;
-            public static class ProxyHelper {
+            public static class ProxyRefresher {
                 [DllImport("wininet.dll", SetLastError = true)]
                 public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
                 public static void Refresh() {
@@ -69,20 +90,23 @@ jobs:
                 }
             }
           "@
+          [ProxyRefresher]::Refresh()
 
-          [ProxyHelper]::Refresh()
+          Write-Host "Proxy applied system-wide!"
 
-          Stop-Process -Name explorer -Force
-          Start-Process explorer.exe
-
-          Write-Host "Proxy set and enabled in Windows Settings for $proxyUri with user $user"
-
+      # ----------------------------------------------------------
+      # 4️⃣ Enable RDP and firewall access
+      # ----------------------------------------------------------
       - name: Enable RDP and firewall
         shell: pwsh
         run: |
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+          Write-Host "RDP enabled and firewall rule added."
 
+      # ----------------------------------------------------------
+      # 5️⃣ Create RDP user (same for all)
+      # ----------------------------------------------------------
       - name: Create RDP user
         shell: pwsh
         run: |
@@ -92,58 +116,58 @@ jobs:
             New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
           }
-          Write-Host "RDP User created or exists."
+          Write-Host "RDP user 'rdpsession' created (password: TestPass123!)."
 
+      # ----------------------------------------------------------
+      # 6️⃣ Download and install Tailscale using proxy
+      # ----------------------------------------------------------
       - name: Install Tailscale via proxy
         shell: pwsh
-        env:
-          iproxy: ${{ steps.set_proxy.outputs.iproxy }}
-          uproxy: ${{ steps.set_proxy.outputs.uproxy }}
         run: |
-          $proxyParts = $env:uproxy -split ':'
-          $proxyUser = $proxyParts[0]
-          $proxyPass = $proxyParts[1]
-          $proxyUri = "http://$($env:iproxy)"
-          $creds = New-Object System.Management.Automation.PSCredential($proxyUser, (ConvertTo-SecureString $proxyPass -AsPlainText -Force))
+          $proxyUri = "http://$($env:IPPORT)"
+          $userpass = $env:USERPASS -split ':'
+          $proxyUser = $userpass[0]
+          $proxyPass = $userpass[1]
 
+          $creds = New-Object System.Management.Automation.PSCredential($proxyUser, (ConvertTo-SecureString $proxyPass -AsPlainText -Force))
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $outFile = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $outFile -Proxy $proxyUri -ProxyCredential $creds
 
+          Invoke-WebRequest -Uri $url -OutFile $outFile -Proxy $proxyUri -ProxyCredential $creds
           Start-Process msiexec.exe -ArgumentList "/i `"$outFile`" /quiet /norestart" -Wait
           Remove-Item $outFile
+          Write-Host "Tailscale installed successfully via proxy."
 
+      # ----------------------------------------------------------
+      # 7️⃣ Connect to Tailscale
+      # ----------------------------------------------------------
       - name: Connect to Tailscale
         shell: pwsh
         env:
-          proxy_index: ${{ matrix.proxy_index }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $hostName = "gh-runner-$env:proxy_index"
-          Write-Host "Connecting Tailscale with hostname $hostName"
+          $hostName = "gh-proxy-$env:proxy_index"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName
-          $tsIP = $null
-          $tries = 0
-          while (-not $tsIP -and $tries -lt 20) {
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            Start-Sleep -Seconds 5
-            $tries++
-          }
-          if (-not $tsIP) {
-            Write-Error "Tailscale IP not assigned."
-            exit 1
-          }
-          Write-Host "Tailscale IP: $tsIP"
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Write-Host "Tailscale connected with IP: $tsIP"
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
+      # ----------------------------------------------------------
+      # 8️⃣ Show connection details
+      # ----------------------------------------------------------
       - name: Show session info
         shell: pwsh
         run: |
-          Write-Host "Session $env:proxy_index Tailscale IP: $env:TAILSCALE_IP"
-          Write-Host "RDP User: rdpsession"
+          Write-Host "Session $env:proxy_index"
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "RDP Username: rdpsession"
           Write-Host "RDP Password: TestPass123!"
 
+      # ----------------------------------------------------------
+      # 9️⃣ Keep session alive
+      # ----------------------------------------------------------
       - name: Keep runner alive
         shell: pwsh
         run: |
+          Write-Host "Keeping session $env:proxy_index alive..."
           while ($true) { Start-Sleep -Seconds 5 }
