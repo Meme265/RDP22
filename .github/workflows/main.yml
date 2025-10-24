@@ -15,7 +15,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Parse proxy line (ip:port:username:password)
+    - name: Parse proxy line
       id: set_proxy
       shell: pwsh
       env:
@@ -49,9 +49,9 @@ jobs:
         $proxyUri = $ipport
         $bypassList = "<local>"
 
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyUri
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $bypassList
+        Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" -Name ProxyEnable -Value 1
+        Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" -Name ProxyServer -Value $proxyUri
+        Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" -Name ProxyOverride -Value $bypassList
 
         cmdkey /add:$($ipport.Split(':')[0]) /user:$user /pass:$pass
 
@@ -77,13 +77,13 @@ jobs:
 
         Write-Host "Proxy set and enabled in Windows Settings for $proxyUri with user $user"
 
-    - name: Enable RDP and firewall access
+    - name: Enable RDP and firewall
       shell: pwsh
       run: |
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
         netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
 
-    - name: Create RDP user if missing
+    - name: Create RDP user
       shell: pwsh
       run: |
         $password = "TestPass123!"
@@ -92,9 +92,9 @@ jobs:
           New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
         }
-        Write-Host "RDP user ready with password $password"
+        Write-Host "RDP User created or exists."
 
-    - name: Install Tailscale with proxy
+    - name: Install Tailscale via proxy
       shell: pwsh
       env:
         iproxy: ${{ steps.set_proxy.outputs.iproxy }}
