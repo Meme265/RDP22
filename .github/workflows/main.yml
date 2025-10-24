@@ -13,16 +13,15 @@ jobs:
 
     steps:
       # ----------------------------------------------------------
-      # 1️⃣ Checkout repo so we can access proxies.txt
+      # 1️⃣ Checkout repo so proxies.txt is available
       # ----------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v3
 
       # ----------------------------------------------------------
-      # 2️⃣ Read the specific proxy line for this job index
-      # Format expected in proxies.txt:
-      #    ip:port:username:password
-      # One proxy per line
+      # 2️⃣ Read specific proxy line for this job index
+      # proxies.txt format:
+      #   ip:port:username:password
       # ----------------------------------------------------------
       - name: Parse proxy line
         id: set_proxy
@@ -55,7 +54,7 @@ jobs:
           echo "USERPASS=$userpass" >> $env:GITHUB_ENV
 
       # ----------------------------------------------------------
-      # 3️⃣ Set Windows proxy globally (system-wide)
+      # 3️⃣ Apply system proxy in Windows settings
       # ----------------------------------------------------------
       - name: Set Proxy in Windows Settings
         shell: pwsh
@@ -67,15 +66,12 @@ jobs:
 
           Write-Host "Configuring system proxy $ipport for user $user"
 
-          # Enable Proxy
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $ipport
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value "<local>"
 
-          # Save credentials
           cmdkey /add:$($ipport.Split(':')[0]) /user:$user /pass:$pass
 
-          # Force refresh of proxy settings
           Add-Type -TypeDefinition @"
             using System;
             using System.Runtime.InteropServices;
@@ -95,17 +91,35 @@ jobs:
           Write-Host "Proxy applied system-wide!"
 
       # ----------------------------------------------------------
-      # 4️⃣ Enable RDP and firewall access
+      # 4️⃣ Test proxy connectivity
+      # ----------------------------------------------------------
+      - name: Test proxy connectivity
+        shell: pwsh
+        run: |
+          $proxyUri = "http://$($env:IPPORT)"
+          $userpass = $env:USERPASS -split ':'
+          $proxyUser = $userpass[0]
+          $proxyPass = $userpass[1]
+          $creds = New-Object System.Management.Automation.PSCredential($proxyUser, (ConvertTo-SecureString $proxyPass -AsPlainText -Force))
+          try {
+            $result = Invoke-WebRequest -Uri "https://ifconfig.me" -Proxy $proxyUri -ProxyCredential $creds -UseBasicParsing -TimeoutSec 15
+            Write-Host "✅ Proxy test success! External IP: $($result.Content)"
+          } catch {
+            Write-Host "⚠️ Proxy test failed: $($_.Exception.Message)"
+          }
+
+      # ----------------------------------------------------------
+      # 5️⃣ Enable RDP + Firewall
       # ----------------------------------------------------------
       - name: Enable RDP and firewall
         shell: pwsh
         run: |
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
-          Write-Host "RDP enabled and firewall rule added."
+          Write-Host "✅ RDP enabled and firewall rule added."
 
       # ----------------------------------------------------------
-      # 5️⃣ Create RDP user (same for all)
+      # 6️⃣ Create RDP user
       # ----------------------------------------------------------
       - name: Create RDP user
         shell: pwsh
@@ -116,30 +130,24 @@ jobs:
             New-LocalUser -Name "rdpsession" -Password $securePass -AccountNeverExpires
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpsession"
           }
-          Write-Host "RDP user 'rdpsession' created (password: TestPass123!)."
+          Write-Host "✅ RDP user 'rdpsession' created (Password: TestPass123!)."
 
       # ----------------------------------------------------------
-      # 6️⃣ Download and install Tailscale using proxy
+      # 7️⃣ Install Tailscale (no proxy for reliability)
       # ----------------------------------------------------------
-      - name: Install Tailscale via proxy
+      - name: Install Tailscale (direct)
         shell: pwsh
         run: |
-          $proxyUri = "http://$($env:IPPORT)"
-          $userpass = $env:USERPASS -split ':'
-          $proxyUser = $userpass[0]
-          $proxyPass = $userpass[1]
-
-          $creds = New-Object System.Management.Automation.PSCredential($proxyUser, (ConvertTo-SecureString $proxyPass -AsPlainText -Force))
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $outFile = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest -Uri $url -OutFile $outFile -Proxy $proxyUri -ProxyCredential $creds
+          Write-Host "⬇️ Downloading Tailscale directly (no proxy)..."
+          Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$outFile`" /quiet /norestart" -Wait
           Remove-Item $outFile
-          Write-Host "Tailscale installed successfully via proxy."
+          Write-Host "✅ Tailscale installed successfully."
 
       # ----------------------------------------------------------
-      # 7️⃣ Connect to Tailscale
+      # 8️⃣ Connect to Tailscale
       # ----------------------------------------------------------
       - name: Connect to Tailscale
         shell: pwsh
@@ -149,25 +157,25 @@ jobs:
           $hostName = "gh-proxy-$env:proxy_index"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          Write-Host "Tailscale connected with IP: $tsIP"
+          Write-Host "✅ Connected to Tailscale with IP: $tsIP"
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       # ----------------------------------------------------------
-      # 8️⃣ Show connection details
+      # 9️⃣ Show connection details
       # ----------------------------------------------------------
       - name: Show session info
         shell: pwsh
         run: |
-          Write-Host "Session $env:proxy_index"
+          Write-Host "🌐 Session Index: $env:proxy_index"
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           Write-Host "RDP Username: rdpsession"
           Write-Host "RDP Password: TestPass123!"
 
       # ----------------------------------------------------------
-      # 9️⃣ Keep session alive
+      # 🔟 Keep the runner alive (up to 6 hours)
       # ----------------------------------------------------------
       - name: Keep runner alive
         shell: pwsh
         run: |
-          Write-Host "Keeping session $env:proxy_index alive..."
+          Write-Host "🕐 Keeping session $env:proxy_index alive for RDP..."
           while ($true) { Start-Sleep -Seconds 5 }
